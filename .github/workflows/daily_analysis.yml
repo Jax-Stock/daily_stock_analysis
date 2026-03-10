@@ -80,3 +80,11 @@ jobs:
           git add .
           git commit -m "chore: update daily reports [skip ci]" || exit 0
           git push
+      - name: 自动提交分析报告
+        if: always()
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add reports/ logs/  # 重点是这两个文件夹
+          git commit -m "📊 更新每日分析报告" || exit 0
+          git push
