@@ -22,7 +22,7 @@ on:
 
 concurrency:
   group: stock-analysis
-  cancel-in-progress: false
+  cancel-in-progress: true # 发现新任务时，取消正在运行的旧任务，解决端口占用
 
 jobs:
   analyze:
@@ -36,7 +36,6 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
-          # 使用你在 Secrets 存好的万能钥匙
           token: ${{ secrets.MY_PUSH_TOKEN }}
       
       - name: 设置 Python
@@ -50,8 +49,9 @@ jobs:
           pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       
-      - name: 创建目录
-        run: mkdir -p data logs reports docs
+      - name: 清理可能存在的残留进程
+        run: |
+          fuser -k 8000/tcp || true
       
       - name: 执行股票分析
         env:
@@ -64,30 +64,26 @@ jobs:
           if [ "${{ github.event.inputs.force_run }}" = "true" ]; then FORCE_RUN_ARG="--force-run"; fi
           python main.py $FORCE_RUN_ARG
       
-      - name: 自动提交并强制推送
-        env:
-          MY_TOKEN: ${{ secrets.MY_PUSH_TOKEN }}
+      - name: 验证文件生成
         run: |
-          # 1. 配置身份
+          echo "==== 检查报告目录 ===="
+          ls -R reports/
+          if [ -z "$(ls -A reports/ 2>/dev/null)" ]; then
+            echo "错误：reports 文件夹是空的，没有生成任何报告！"
+            exit 1
+          fi
+      
+      - name: 自动提交并强制推送
+        run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          # 2. 检查是否有报告生成 (调试用)
-          echo "检查生成的报告文件："
-          ls -R reports/
-          
-          # 3. 添加文件
           git add reports/ logs/ docs/ 2>/dev/null || true
           
-          # 4. 提交
-          # 如果没有变化就提示并结束，不报错
           if git diff --staged --quiet; then
-            echo "没有发现任何新文件变动，跳过推送。"
+            echo "无文件变动，跳过推送。"
             exit 0
           fi
           
           git commit -m "📊 自动更新分析报告 [skip ci]"
-          
-          # 5. 强制推送 (解决权限无法在网页开启的问题)
-          # 注意：这里会自动识别你的仓库地址并注入令牌
           git push https://${{ secrets.MY_PUSH_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main --force
