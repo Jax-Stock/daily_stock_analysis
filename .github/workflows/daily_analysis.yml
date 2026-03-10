@@ -5,31 +5,18 @@ on:
     - cron: '*/10 * * * *'  
   workflow_dispatch:
     inputs:
-      mode:
-        description: '运行模式'
-        required: true
-        default: 'full'
-        type: choice
-        options:
-          - full
-          - market-only
-          - stocks-only
       force_run:
         description: '强制运行'
         required: false
-        default: false
+        default: true # 调试阶段默认开启强制运行
         type: boolean
-
-concurrency:
-  group: stock-analysis
-  cancel-in-progress: true # 发现新任务时，取消正在运行的旧任务，解决端口占用
 
 jobs:
   analyze:
     runs-on: ubuntu-latest
     permissions:
       contents: write
-    timeout-minutes: 30
+    timeout-minutes: 15 # 缩短超时，快速反馈
     
     steps:
       - name: 检出代码
@@ -49,41 +36,41 @@ jobs:
           pip install --upgrade pip
           if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
       
-      - name: 清理可能存在的残留进程
-        run: |
-          fuser -k 8000/tcp || true
-      
-      - name: 执行股票分析
+      - name: 执行股票分析 (调试模式)
         env:
           GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
           TUSHARE_TOKEN: ${{ secrets.TUSHARE_TOKEN }}
           STOCK_LIST: ${{ vars.STOCK_LIST || secrets.STOCK_LIST || '600519' }}
-          LOG_LEVEL: INFO
         run: |
-          FORCE_RUN_ARG=""
-          if [ "${{ github.event.inputs.force_run }}" = "true" ]; then FORCE_RUN_ARG="--force-run"; fi
-          python main.py $FORCE_RUN_ARG
-      
-      - name: 验证文件生成
+          # 检查是否存在端口占用并强杀（预防之前的错误）
+          sudo fuser -k 8000/tcp || true
+          
+          # 运行分析脚本
+          # 注意：如果 main.py 启动了服务器，这里会卡死。
+          # 我们加上超时控制，如果 5 分钟没跑完说明它在启动服务器，直接干掉。
+          timeout 300s python main.py --force-run || echo "脚本运行超时或已停止"
+
+      - name: 🔍 全局搜索生成的报告
         run: |
-          echo "==== 检查报告目录 ===="
-          ls -R reports/
-          if [ -z "$(ls -A reports/ 2>/dev/null)" ]; then
-            echo "错误：reports 文件夹是空的，没有生成任何报告！"
-            exit 1
-          fi
-      
+          echo "==== 正在全盘搜索 .md 报告文件 ===="
+          # 看看文件是不是跑偏了，没在 reports 文件夹里
+          find . -name "*.md" -not -path "*/node_modules/*"
+          
+          echo "==== 检查当前目录结构 ===="
+          ls -R
+          
       - name: 自动提交并强制推送
         run: |
           git config --local user.email "github-actions[bot]@users.noreply.github.com"
           git config --local user.name "github-actions[bot]"
           
-          git add reports/ logs/ docs/ 2>/dev/null || true
+          # 尝试添加所有可能的报告目录
+          git add reports/ docs/ data/ *.md 2>/dev/null || true
           
           if git diff --staged --quiet; then
-            echo "无文件变动，跳过推送。"
-            exit 0
+            echo "❌ 依然没有检测到任何文件变动！"
+            exit 1 # 强制让 Action 变红，方便看日志
           fi
           
-          git commit -m "📊 自动更新分析报告 [skip ci]"
+          git commit -m "📊 自动更新报告 [skip ci]"
           git push https://${{ secrets.MY_PUSH_TOKEN }}@github.com/${{ github.repository }}.git HEAD:main --force
